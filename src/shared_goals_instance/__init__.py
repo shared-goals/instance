@@ -1,0 +1,1 @@
+"""Shared Goals platform instance."""

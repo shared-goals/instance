@@ -1,0 +1,38 @@
+[project]
+name = "shared-goals-instance"
+version = "0.1.0"
+description = "Shared Goals platform instance backend"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.116.0,<1",
+    "sqlalchemy>=2.0.0,<3",
+    "uvicorn>=0.35.0,<1",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.0,<1",
+    "pytest>=8.4.0,<9",
+    "ruff>=0.12.0,<1",
+]
+
+[build-system]
+requires = ["hatchling>=1.27.0,<2"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = [
+    "error",
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.:starlette.exceptions.StarletteDeprecationWarning:fastapi.testclient",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]
