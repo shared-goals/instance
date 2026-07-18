@@ -30,6 +30,7 @@ lint:
 
 format:
 	@printf "Formatting Python code with Ruff...\n"
+	$(RUFF) check --fix .
 	$(RUFF) format .
 
 check: lint

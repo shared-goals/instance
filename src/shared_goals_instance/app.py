@@ -3,12 +3,15 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import Select, create_engine, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from shared_goals_instance.models import Base, Goal
+from shared_goals_instance.models import Base, Contract, Goal
+
+TEST_AGENT_KEY_ID = "test-agent-key"
+TEST_USER_ID = "00000000-0000-4000-8000-000000000001"
 
 
 class GoalCreate(BaseModel):
@@ -16,6 +19,16 @@ class GoalCreate(BaseModel):
     description: str = Field(min_length=1)
     visibility: Literal["public", "invite", "personal"]
     instance_id: str = "default"
+
+
+class ContractCreate(BaseModel):
+    cadence: Literal["daily", "weekly", "monthly", "occasionally"]
+    time_minutes: int | None = Field(default=None, ge=0)
+
+
+class ContractUpdate(BaseModel):
+    time_minutes: int | None = Field(default=None, ge=0)
+    is_active: bool | None = None
 
 
 def create_app(database_url: str = "sqlite:///shared_goals.db") -> FastAPI:
@@ -65,7 +78,58 @@ def create_app(database_url: str = "sqlite:///shared_goals.db") -> FastAPI:
         session.commit()
         return _goal_response(goal)
 
+    @app.post("/api/v1/goals/{goal_id}/contracts", status_code=201)
+    def create_contract(
+        goal_id: str,
+        payload: ContractCreate,
+        user_id: str = Depends(_user_id_from_agent_key),
+        session: Session = Depends(get_session),
+    ) -> dict[str, object]:
+        goal = session.get(Goal, goal_id)
+        if goal is None:
+            raise HTTPException(status_code=404, detail={"code": "goal_not_found"})
+
+        contract = Contract(
+            id=str(uuid4()),
+            goal_id=goal.id,
+            user_id=user_id,
+            cadence=payload.cadence,
+            time_minutes=payload.time_minutes,
+            is_active=True,
+            created_at=datetime.now(UTC),
+        )
+        session.add(contract)
+        session.commit()
+        return _contract_response(contract)
+
+    @app.patch("/api/v1/contracts/{contract_id}")
+    def update_contract(
+        contract_id: str,
+        payload: ContractUpdate,
+        user_id: str = Depends(_user_id_from_agent_key),
+        session: Session = Depends(get_session),
+    ) -> dict[str, object]:
+        contract = session.get(Contract, contract_id)
+        if contract is None or contract.user_id != user_id:
+            raise HTTPException(status_code=404, detail={"code": "contract_not_found"})
+
+        if "time_minutes" in payload.model_fields_set:
+            _apply_time_reduction(contract, payload.time_minutes)
+        if payload.is_active is not None:
+            contract.is_active = payload.is_active
+
+        session.commit()
+        return _contract_response(contract)
+
     return app
+
+
+def _user_id_from_agent_key(
+    agent_key_id: str = Header(alias="X-Agent-Key-Id"),
+) -> str:
+    if agent_key_id != TEST_AGENT_KEY_ID:
+        raise HTTPException(status_code=401, detail={"code": "invalid_agent_key"})
+    return TEST_USER_ID
 
 
 def _moderation_status(payload: GoalCreate) -> str:
@@ -92,4 +156,29 @@ def _goal_response(goal: Goal) -> dict[str, object]:
         "instance_id": goal.instance_id,
         "moderation_status": goal.moderation_status,
         "created_at": goal.created_at.isoformat(),
+    }
+
+
+def _apply_time_reduction(contract: Contract, time_minutes: int | None) -> None:
+    if (
+        contract.time_minutes is not None
+        and time_minutes is not None
+        and time_minutes > contract.time_minutes
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "contract_time_increase_not_supported"},
+        )
+    contract.time_minutes = time_minutes
+
+
+def _contract_response(contract: Contract) -> dict[str, object]:
+    return {
+        "contract_id": contract.id,
+        "goal_id": contract.goal_id,
+        "user_id": contract.user_id,
+        "cadence": contract.cadence,
+        "time_minutes": contract.time_minutes,
+        "is_active": contract.is_active,
+        "created_at": contract.created_at.isoformat(),
     }
