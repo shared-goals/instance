@@ -7,6 +7,7 @@ def test_agent_can_create_and_find_public_goal(client):
                 "Help young people learn computing through regular practice."
             ),
             "visibility": "public",
+            "user_approved": True,
         },
     )
 
@@ -34,6 +35,7 @@ def test_public_competitive_goal_is_rejected(client):
             "title": "Beat everyone in the city",
             "description": "A public competition to rank people by wins.",
             "visibility": "public",
+            "user_approved": True,
         },
     )
 
@@ -41,3 +43,18 @@ def test_public_competitive_goal_is_rejected(client):
     error = response.json()
     assert error["detail"]["code"] == "public_goal_rejected"
     assert "competitive" in error["detail"]["reason"]
+
+
+def test_unapproved_goal_creation_is_rejected(client):
+    response = client.post(
+        "/api/v1/goals",
+        json={
+            "title": "Practice music together",
+            "description": "Build a shared music practice habit.",
+            "visibility": "public",
+            "user_approved": False,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "user_approval_required"

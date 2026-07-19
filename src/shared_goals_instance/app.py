@@ -15,20 +15,24 @@ TEST_USER_ID = "00000000-0000-4000-8000-000000000001"
 
 
 class GoalCreate(BaseModel):
+    goal_id: str | None = Field(default=None, min_length=1)
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
     visibility: Literal["public", "invite", "personal"]
     instance_id: str = "default"
+    user_approved: bool
 
 
 class ContractCreate(BaseModel):
     cadence: Literal["daily", "weekly", "monthly", "occasionally"]
     time_minutes: int | None = Field(default=None, ge=0)
+    user_approved: bool
 
 
 class ContractUpdate(BaseModel):
     time_minutes: int | None = Field(default=None, ge=0)
     is_active: bool | None = None
+    user_approved: bool
 
 
 def create_app(database_url: str = "sqlite:///shared_goals.db") -> FastAPI:
@@ -64,9 +68,10 @@ def create_app(database_url: str = "sqlite:///shared_goals.db") -> FastAPI:
         payload: GoalCreate,
         session: Session = Depends(get_session),
     ) -> dict[str, object]:
+        _require_user_approval(payload.user_approved)
         moderation_status = _moderation_status(payload)
         goal = Goal(
-            id=str(uuid4()),
+            id=_goal_id(payload.goal_id),
             title=payload.title,
             description=payload.description,
             visibility=payload.visibility,
@@ -78,6 +83,24 @@ def create_app(database_url: str = "sqlite:///shared_goals.db") -> FastAPI:
         session.commit()
         return _goal_response(goal)
 
+    @app.get("/api/v1/contracts")
+    def list_contracts(
+        user_id: str = Depends(_user_id_from_agent_key),
+        session: Session = Depends(get_session),
+    ) -> dict[str, list[dict[str, object]]]:
+        statement = (
+            select(Contract, Goal)
+            .join(Goal, Contract.goal_id == Goal.id)
+            .where(Contract.user_id == user_id, Contract.is_active.is_(True))
+            .order_by(Contract.created_at)
+        )
+        rows = session.execute(statement).all()
+        return {
+            "contracts": [
+                _compass_contract_response(contract, goal) for contract, goal in rows
+            ]
+        }
+
     @app.post("/api/v1/goals/{goal_id}/contracts", status_code=201)
     def create_contract(
         goal_id: str,
@@ -85,6 +108,7 @@ def create_app(database_url: str = "sqlite:///shared_goals.db") -> FastAPI:
         user_id: str = Depends(_user_id_from_agent_key),
         session: Session = Depends(get_session),
     ) -> dict[str, object]:
+        _require_user_approval(payload.user_approved)
         goal = session.get(Goal, goal_id)
         if goal is None:
             raise HTTPException(status_code=404, detail={"code": "goal_not_found"})
@@ -109,6 +133,7 @@ def create_app(database_url: str = "sqlite:///shared_goals.db") -> FastAPI:
         user_id: str = Depends(_user_id_from_agent_key),
         session: Session = Depends(get_session),
     ) -> dict[str, object]:
+        _require_user_approval(payload.user_approved)
         contract = session.get(Contract, contract_id)
         if contract is None or contract.user_id != user_id:
             raise HTTPException(status_code=404, detail={"code": "contract_not_found"})
@@ -147,6 +172,20 @@ def _moderation_status(payload: GoalCreate) -> str:
     return "approved"
 
 
+def _require_user_approval(user_approved: bool) -> None:
+    if not user_approved:
+        raise HTTPException(status_code=422, detail={"code": "user_approval_required"})
+
+
+def _goal_id(goal_id: str | None) -> str:
+    if goal_id is None:
+        return str(uuid4())
+    normalized = goal_id.strip().removeprefix("#")
+    if not normalized:
+        raise HTTPException(status_code=422, detail={"code": "invalid_goal_id"})
+    return normalized
+
+
 def _goal_response(goal: Goal) -> dict[str, object]:
     return {
         "goal_id": goal.id,
@@ -181,4 +220,17 @@ def _contract_response(contract: Contract) -> dict[str, object]:
         "time_minutes": contract.time_minutes,
         "is_active": contract.is_active,
         "created_at": contract.created_at.isoformat(),
+    }
+
+
+def _compass_contract_response(contract: Contract, goal: Goal) -> dict[str, object]:
+    return {
+        "contract_id": contract.id,
+        "goal_id": goal.id,
+        "goal_tag": f"#{goal.id}",
+        "goal_title": goal.title,
+        "cadence": contract.cadence,
+        "time_minutes": contract.time_minutes,
+        "is_active": contract.is_active,
+        "latest_next_step": None,
     }

@@ -9,6 +9,7 @@ def test_agent_can_join_goal_with_contract_and_reduce_time(client):
             "title": "Practice programming together",
             "description": "Build a steady computer club practice habit.",
             "visibility": "public",
+            "user_approved": True,
         },
     )
     goal_id = goal_response.json()["goal_id"]
@@ -16,7 +17,7 @@ def test_agent_can_join_goal_with_contract_and_reduce_time(client):
     contract_response = client.post(
         f"/api/v1/goals/{goal_id}/contracts",
         headers=TEST_AGENT_HEADERS,
-        json={"cadence": "weekly", "time_minutes": 60},
+        json={"cadence": "weekly", "time_minutes": 60, "user_approved": True},
     )
 
     assert contract_response.status_code == 201
@@ -35,7 +36,7 @@ def test_agent_can_join_goal_with_contract_and_reduce_time(client):
     reduced_response = client.patch(
         f"/api/v1/contracts/{contract['contract_id']}",
         headers=TEST_AGENT_HEADERS,
-        json={"time_minutes": 30},
+        json={"time_minutes": 30, "user_approved": True},
     )
 
     assert reduced_response.status_code == 200
