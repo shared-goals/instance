@@ -113,6 +113,26 @@ def create_app(database_url: str = "sqlite:///shared_goals.db") -> FastAPI:
             ]
         }
 
+    @app.get("/api/v1/compass/next-steps")
+    def list_compass_next_steps(
+        user_id: str = Depends(_user_id_from_agent_key),
+        session: Session = Depends(get_session),
+    ) -> dict[str, list[dict[str, object]]]:
+        statement = (
+            select(Contract, Goal)
+            .join(Goal, Contract.goal_id == Goal.id)
+            .where(Contract.user_id == user_id, Contract.is_active.is_(True))
+            .order_by(Contract.created_at)
+        )
+        rows = session.execute(statement).all()
+        next_steps = []
+        for contract, goal in rows:
+            commit = _latest_next_step_commit(session, contract.id)
+            if commit is None:
+                continue
+            next_steps.append(_compass_next_step_response(contract, goal, commit))
+        return {"next_steps": next_steps}
+
     @app.post("/api/v1/goals/{goal_id}/contracts", status_code=201)
     def create_contract(
         goal_id: str,
@@ -302,6 +322,25 @@ def _compass_contract_response(
     }
 
 
+def _compass_next_step_response(
+    contract: Contract,
+    goal: Goal,
+    commit: Commit,
+) -> dict[str, object]:
+    return {
+        "contract_id": contract.id,
+        "goal_id": goal.id,
+        "goal_tag": f"#{goal.id}",
+        "goal_title": goal.title,
+        "next_step": commit.next_step,
+        "cadence": contract.cadence,
+        "time_minutes": contract.time_minutes,
+        "skill_tag": commit.skill_tag,
+        "is_happy_moment": commit.is_happy_moment,
+        "source": "platform",
+    }
+
+
 def _contract_for_user(session: Session, contract_id: str, user_id: str) -> Contract:
     contract = session.get(Contract, contract_id)
     if contract is None or contract.user_id != user_id:
@@ -310,8 +349,13 @@ def _contract_for_user(session: Session, contract_id: str, user_id: str) -> Cont
 
 
 def _latest_next_step(session: Session, contract_id: str) -> str | None:
+    commit = _latest_next_step_commit(session, contract_id)
+    return commit.next_step if commit is not None else None
+
+
+def _latest_next_step_commit(session: Session, contract_id: str) -> Commit | None:
     statement = (
-        select(Commit.next_step)
+        select(Commit)
         .where(Commit.contract_id == contract_id, Commit.next_step.is_not(None))
         .order_by(Commit.created_at.desc())
         .limit(1)
