@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import Select, create_engine, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from shared_goals_instance.models import Base, Contract, Goal
+from shared_goals_instance.models import Base, Commit, Contract, Goal
 
 TEST_AGENT_KEY_ID = "test-agent-key"
 TEST_USER_ID = "00000000-0000-4000-8000-000000000001"
@@ -32,6 +32,17 @@ class ContractCreate(BaseModel):
 class ContractUpdate(BaseModel):
     time_minutes: int | None = Field(default=None, ge=0)
     is_active: bool | None = None
+    user_approved: bool
+
+
+class CommitCreate(BaseModel):
+    time_minutes: int | None = Field(default=None, ge=0)
+    done: str | None = None
+    next_step: str | None = None
+    skill_tag: Literal["will", "mind", "feeling", "faith"] | None = None
+    is_happy_moment: bool = False
+    is_public: bool = False
+    source_ref: str | None = None
     user_approved: bool
 
 
@@ -97,7 +108,8 @@ def create_app(database_url: str = "sqlite:///shared_goals.db") -> FastAPI:
         rows = session.execute(statement).all()
         return {
             "contracts": [
-                _compass_contract_response(contract, goal) for contract, goal in rows
+                _compass_contract_response(contract, goal, session)
+                for contract, goal in rows
             ]
         }
 
@@ -145,6 +157,32 @@ def create_app(database_url: str = "sqlite:///shared_goals.db") -> FastAPI:
 
         session.commit()
         return _contract_response(contract)
+
+    @app.post("/api/v1/contracts/{contract_id}/commits", status_code=201)
+    def create_commit(
+        contract_id: str,
+        payload: CommitCreate,
+        user_id: str = Depends(_user_id_from_agent_key),
+        session: Session = Depends(get_session),
+    ) -> dict[str, object]:
+        _require_user_approval(payload.user_approved)
+        contract = _contract_for_user(session, contract_id, user_id)
+        done = payload.done or _latest_next_step(session, contract.id)
+        commit = Commit(
+            id=str(uuid4()),
+            contract_id=contract.id,
+            time_minutes=payload.time_minutes,
+            done=done,
+            next_step=payload.next_step,
+            skill_tag=payload.skill_tag,
+            is_happy_moment=payload.is_happy_moment,
+            is_public=payload.is_public,
+            source_ref=payload.source_ref,
+            created_at=datetime.now(UTC),
+        )
+        session.add(commit)
+        session.commit()
+        return _commit_response(commit)
 
     return app
 
@@ -223,7 +261,11 @@ def _contract_response(contract: Contract) -> dict[str, object]:
     }
 
 
-def _compass_contract_response(contract: Contract, goal: Goal) -> dict[str, object]:
+def _compass_contract_response(
+    contract: Contract,
+    goal: Goal,
+    session: Session,
+) -> dict[str, object]:
     return {
         "contract_id": contract.id,
         "goal_id": goal.id,
@@ -232,5 +274,36 @@ def _compass_contract_response(contract: Contract, goal: Goal) -> dict[str, obje
         "cadence": contract.cadence,
         "time_minutes": contract.time_minutes,
         "is_active": contract.is_active,
-        "latest_next_step": None,
+        "latest_next_step": _latest_next_step(session, contract.id),
+    }
+
+
+def _contract_for_user(session: Session, contract_id: str, user_id: str) -> Contract:
+    contract = session.get(Contract, contract_id)
+    if contract is None or contract.user_id != user_id:
+        raise HTTPException(status_code=404, detail={"code": "contract_not_found"})
+    return contract
+
+
+def _latest_next_step(session: Session, contract_id: str) -> str | None:
+    statement = (
+        select(Commit.next_step)
+        .where(Commit.contract_id == contract_id, Commit.next_step.is_not(None))
+        .order_by(Commit.created_at.desc())
+        .limit(1)
+    )
+    return session.scalar(statement)
+
+
+def _commit_response(commit: Commit) -> dict[str, object]:
+    return {
+        "commit_id": commit.id,
+        "contract_id": commit.contract_id,
+        "time_minutes": commit.time_minutes,
+        "done": commit.done,
+        "next_step": commit.next_step,
+        "skill_tag": commit.skill_tag,
+        "is_happy_moment": commit.is_happy_moment,
+        "is_public": commit.is_public,
+        "created_at": commit.created_at.isoformat(),
     }
