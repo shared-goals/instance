@@ -184,6 +184,30 @@ def create_app(database_url: str = "sqlite:///shared_goals.db") -> FastAPI:
         session.commit()
         return _commit_response(commit)
 
+    @app.get("/api/v1/contracts/{contract_id}/advice")
+    def get_contract_advice(
+        contract_id: str,
+        user_id: str = Depends(_user_id_from_agent_key),
+        session: Session = Depends(get_session),
+    ) -> dict[str, object]:
+        contract = _contract_for_user(session, contract_id, user_id)
+        goal = session.get(Goal, contract.goal_id)
+        if goal is None:
+            raise HTTPException(status_code=404, detail={"code": "goal_not_found"})
+
+        partner_id = _partner_id(goal)
+        latest_next_step = _latest_next_step(session, contract.id)
+        recommendations = [latest_next_step] if latest_next_step else []
+        return {
+            "contract_id": contract.id,
+            "goal_id": goal.id,
+            "partner_id": partner_id,
+            "advice_text": _advice_text(goal, partner_id),
+            "recommended_next_steps": recommendations,
+            "source": "partner_stub" if partner_id else "platform",
+            "subscription_required": False,
+        }
+
     return app
 
 
@@ -293,6 +317,22 @@ def _latest_next_step(session: Session, contract_id: str) -> str | None:
         .limit(1)
     )
     return session.scalar(statement)
+
+
+def _partner_id(goal: Goal) -> str | None:
+    text = f"{goal.id} {goal.title} {goal.description}".lower()
+    if "computer club" in text:
+        return "computer_club"
+    return None
+
+
+def _advice_text(goal: Goal, partner_id: str | None) -> str:
+    if partner_id == "computer_club":
+        return (
+            "We recommend choosing one small computer-club step that can fit "
+            "this contract period."
+        )
+    return f"We recommend choosing one small next step for {goal.title}."
 
 
 def _commit_response(commit: Commit) -> dict[str, object]:
